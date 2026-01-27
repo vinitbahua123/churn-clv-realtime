@@ -1,0 +1,43 @@
+# Data Paths
+data:
+  raw_path: "data/raw/telco_churn.csv"
+  processed_path: "data/processed/cleaned_churn_data.csv"
+  features_path: "data/features/feature_store.duckdb"
+
+# Model Paths
+models:
+  churn_model: "models/churn_model.pkl"
+  scaler: "models/scaler.pkl"
+
+# MLflow Settings
+mlflow:
+  experiment_name: "churn_prediction"
+  tracking_uri: "file:./mlruns"
+
+# Feature Engineering
+features:
+  target: "Churn"
+  drop_cols: ["customerID"]
+  categorical_cols:
+    - "gender"
+    - "Partner"
+    - "Dependents"
+    - "PhoneService"
+    - "MultipleLines"
+    - "InternetService"
+    - "OnlineSecurity"
+    - "OnlineBackup"
+    - "DeviceProtection"
+    - "TechSupport"
+    - "StreamingTV"
+    - "StreamingMovies"
+    - "Contract"
+    - "PaperlessBilling"
+    - "PaymentMethod"
+
+# Model Training
+training:
+  test_size: 0.2
+  random_state: 42
+  n_estimators: 200
+  max_depth: 10
