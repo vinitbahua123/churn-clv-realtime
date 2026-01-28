@@ -140,6 +140,20 @@ python download_data.py
 ---
 
 ## 💻 Usage
+---
+
+## 📸 Dashboard Screenshots
+
+### Customer Input Form
+![Customer Input](screenshots/dashboard_input.png)
+
+### Prediction Results with Business Insights
+![Prediction Results](screenshots/dashboard_prediction.png)
+
+### Model Performance Metrics
+![Model Info](screenshots/dashboard_model_info.png)
+
+---
 
 ### 1. Data Preprocessing
 ```bash

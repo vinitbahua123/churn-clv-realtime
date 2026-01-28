@@ -90,4 +90,4 @@ You should see:
 
 ## 📞 Support
 
-Questions? Open an issue or contact: bahuva.v@northeastern.edu
+Questions? Open an issue or contact: bahua.v@northeastern.edu
