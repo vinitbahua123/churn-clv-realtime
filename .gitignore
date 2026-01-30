@@ -22,7 +22,7 @@ data/features/*.db
 data/features/*.duckdb
 
 # Model artifacts (too large for git)
-models/*.pkl
+
 models/*.joblib
 
 # MLflow experiments
