@@ -9,14 +9,32 @@ import numpy as np
 import joblib
 import yaml
 import sys
+import os
 from pathlib import Path
 
-# Page config
+# Page config MUST be first Streamlit command
 st.set_page_config(
     page_title="Churn Prediction Platform",
     page_icon="📊",
     layout="wide"
 )
+
+# Auto-train models if missing (for Streamlit Cloud)
+if not os.path.exists('models/churn_model.pkl'):
+    st.warning("⚠️ Models not found. Training models... (takes ~1 minute)")
+    
+    with st.spinner("Downloading data and training models..."):
+        import subprocess
+        try:
+            subprocess.run(['python3', 'download_data.py'], check=True, capture_output=True)
+            subprocess.run(['python3', 'src/pipelines/data_preprocessing.py'], check=True, capture_output=True)
+            subprocess.run(['python3', 'src/models/train_churn_model.py'], check=True, capture_output=True)
+            st.success("✅ Models trained successfully!")
+            st.info("🔄 Refreshing...")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Training error: {str(e)}")
+            st.info("Models will be loaded from repository")
 
 # Load config
 @st.cache_resource
@@ -40,42 +58,37 @@ st.title("🎯 Customer Churn Prediction Platform")
 st.markdown("**Real-time churn risk assessment powered by ML**")
 st.markdown("---")
 
-# Sidebar for navigation
+# Sidebar
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Select Page", ["Single Prediction", "Batch Analysis", "Model Info"])
 
-# ============================================================
-# HELPER FUNCTION: Calculate CLV
-# ============================================================
+# Helper function
 def calculate_clv(monthly_charges, tenure, churn_probability):
-    """Calculate Customer Lifetime Value with churn adjustment"""
+    """Calculate CLV with churn adjustment"""
     if churn_probability < 0.3:
-        expected_lifetime_months = 48
+        lifetime = 48
     elif churn_probability < 0.6:
-        expected_lifetime_months = 24
+        lifetime = 24
     else:
-        expected_lifetime_months = 12
+        lifetime = 12
     
     if tenure < 12:
-        tenure_multiplier = 1.2
+        lifetime *= 1.2
     elif tenure < 36:
-        tenure_multiplier = 1.0
+        lifetime *= 1.0
     else:
-        tenure_multiplier = 0.8
+        lifetime *= 0.8
     
-    adjusted_lifetime = expected_lifetime_months * tenure_multiplier
-    survival_probability = 1 - churn_probability
-    clv_base = monthly_charges * adjusted_lifetime * survival_probability
-    discount_factor = 0.95 ** (adjusted_lifetime / 12)
-    clv_adjusted = clv_base * discount_factor
+    survival = 1 - churn_probability
+    clv = monthly_charges * lifetime * survival * (0.95 ** (lifetime / 12))
     
     return {
         'monthly_value': monthly_charges,
         'annual_value': monthly_charges * 12,
-        'expected_lifetime_months': adjusted_lifetime,
-        'clv_optimistic': monthly_charges * adjusted_lifetime,
-        'clv_realistic': clv_adjusted,
-        'revenue_at_risk': clv_adjusted if churn_probability > 0.5 else 0
+        'expected_lifetime_months': lifetime,
+        'clv_optimistic': monthly_charges * lifetime,
+        'clv_realistic': clv,
+        'revenue_at_risk': clv if churn_probability > 0.5 else 0
     }
 
 # ============================================================
@@ -103,15 +116,11 @@ if page == "Single Prediction":
                                        "Bank transfer (automatic)", "Credit card (automatic)"])
         monthly_charges = st.number_input("Monthly Charges ($)", 0.0, 200.0, 70.0, 5.0)
         
-        # Show calculated total charges
         st.markdown("---")
         calculated_total = monthly_charges * tenure
-        st.metric(
-            label="Total Charges (Calculated)", 
-            value=f"${calculated_total:,.2f}",
-            help="Automatically calculated as Monthly Charges × Tenure"
-        )
-        st.caption("ℹ️ This is calculated automatically")
+        st.metric("Total Charges (Calculated)", f"${calculated_total:,.2f}",
+                 help="Monthly × Tenure")
+        st.caption("ℹ️ Calculated automatically")
     
     with col3:
         st.subheader("Services")
@@ -128,10 +137,8 @@ if page == "Single Prediction":
     st.markdown("---")
     
     if st.button("🔮 Predict Churn Risk", type="primary", use_container_width=True):
-        # Calculate total charges
         total_charges = monthly_charges * tenure
         
-        # Create feature vector
         features = np.array([[
             tenure, monthly_charges, total_charges,
             1 if senior_citizen == "Yes" else 0,
@@ -154,12 +161,10 @@ if page == "Single Prediction":
                     2 if payment_method == "Electronic check" else 3))
         ]])
         
-        # Scale and predict
         features_scaled = scaler.transform(features)
         churn_probability = model.predict_proba(features_scaled)[0][1]
         churn_prediction = int(churn_probability > 0.5)
         
-        # Display results
         st.markdown("---")
         st.header("🎯 Prediction Results")
         
@@ -174,235 +179,133 @@ if page == "Single Prediction":
             prediction_text = "⚠️ LIKELY TO CHURN" if churn_prediction else "✅ LIKELY TO STAY"
             st.metric("Prediction", prediction_text)
         
-        # Business insights
         st.markdown("---")
         st.subheader("💼 Business Insights")
         clv_metrics = calculate_clv(monthly_charges, tenure, churn_probability)
         
         if churn_probability > 0.5:
             st.error(f"""
-            ### ⚠️ High Churn Risk Customer
-            
-            **Current Revenue:**
-            - Monthly Value: ${clv_metrics['monthly_value']:.2f}
-            - Annual Value: ${clv_metrics['annual_value']:,.2f}
-            
-            **Lifetime Value Analysis:**
-            - Optimistic LTV (if retained): ${clv_metrics['clv_optimistic']:,.2f}
-            - Realistic LTV (with churn risk): ${clv_metrics['clv_realistic']:,.2f}
-            - **Revenue at Risk: ${clv_metrics['revenue_at_risk']:,.2f}**
-            
-            **Context:**
-            - Customer tenure: {tenure} months
-            - Churn probability: {churn_probability:.1%}
-            - Expected remaining lifetime: {clv_metrics['expected_lifetime_months']:.0f} months
-            
-            **💡 Recommended Actions:**
-            1. **Immediate retention campaign** - Offer targeted incentives
-            2. **Customer success outreach** - Identify pain points
-            3. **Loyalty program enrollment** - Lock in with benefits
-            4. **Contract upgrade offer** - Month-to-month → 1-year contract
-            
-            **Retention Investment Budget:**
-            - Max spend to retain: ${clv_metrics['revenue_at_risk'] * 0.15:,.2f} (15% of CLV)
-            - Break-even retention cost: ${clv_metrics['revenue_at_risk'] * 0.30:,.2f} (30% of CLV)
+### ⚠️ High Churn Risk Customer
+
+**Current Revenue:**
+- Monthly: ${clv_metrics['monthly_value']:.2f}
+- Annual: ${clv_metrics['annual_value']:,.2f}
+
+**Lifetime Value:**
+- Optimistic: ${clv_metrics['clv_optimistic']:,.2f}
+- Realistic: ${clv_metrics['clv_realistic']:,.2f}
+- **At Risk: ${clv_metrics['revenue_at_risk']:,.2f}**
+
+**💡 Actions:**
+1. Immediate retention campaign
+2. Customer success outreach
+3. Contract upgrade offer
+
+**Budget:** Max ${clv_metrics['revenue_at_risk'] * 0.15:,.2f} to retain
             """)
         elif churn_probability > 0.3:
             st.warning(f"""
-            ### 🟡 Medium Churn Risk Customer
-            
-            **Current Revenue:**
-            - Monthly Value: ${clv_metrics['monthly_value']:.2f}
-            - Annual Value: ${clv_metrics['annual_value']:,.2f}
-            
-            **Lifetime Value Analysis:**
-            - Optimistic LTV: ${clv_metrics['clv_optimistic']:,.2f}
-            - Realistic LTV: ${clv_metrics['clv_realistic']:,.2f}
-            
-            **💡 Recommended Actions:**
-            1. **Proactive engagement** - Regular check-ins
-            2. **Add-on services** - Increase stickiness
-            3. **Survey feedback** - Understand satisfaction
-            4. **Loyalty rewards** - Build commitment
+### 🟡 Medium Risk
+**CLV:** ${clv_metrics['clv_realistic']:,.2f}
+**Actions:** Proactive engagement, surveys
             """)
         else:
             st.success(f"""
-            ### ✅ Healthy Customer Relationship
-            
-            **Current Revenue:**
-            - Monthly Value: ${clv_metrics['monthly_value']:.2f}
-            - Annual Value: ${clv_metrics['annual_value']:,.2f}
-            
-            **Lifetime Value Analysis:**
-            - Expected LTV: ${clv_metrics['clv_realistic']:,.2f}
-            - Growth Potential: ${clv_metrics['clv_optimistic'] - clv_metrics['clv_realistic']:,.2f}
-            
-            **💡 Recommended Actions:**
-            1. **Continue regular engagement**
-            2. **Upsell opportunities**
-            3. **Referral program**
-            4. **Annual loyalty bonus**
+### ✅ Healthy Customer
+**CLV:** ${clv_metrics['clv_realistic']:,.2f}
+**Actions:** Continue engagement, upsells
             """)
         
-        # CLV Comparison
         st.markdown("---")
-        st.subheader("📊 CLV Comparison")
+        st.subheader("📊 CLV Breakdown")
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("Annual Value", f"${clv_metrics['annual_value']:,.0f}",
-                     help="Guaranteed revenue for next 12 months")
+            st.metric("Annual", f"${clv_metrics['annual_value']:,.0f}")
         with col2:
-            st.metric("Optimistic LTV", f"${clv_metrics['clv_optimistic']:,.0f}",
-                     delta=f"{clv_metrics['expected_lifetime_months']:.0f} mo lifetime",
-                     help="Maximum potential if customer doesn't churn")
+            st.metric("Optimistic", f"${clv_metrics['clv_optimistic']:,.0f}")
         with col3:
-            st.metric("Realistic LTV", f"${clv_metrics['clv_realistic']:,.0f}",
-                     delta=f"-{churn_probability:.0%} risk adjusted",
-                     delta_color="inverse",
-                     help="Expected value accounting for churn probability")
+            st.metric("Realistic", f"${clv_metrics['clv_realistic']:,.0f}")
 
 # ============================================================
-# PAGE 2: BATCH ANALYSIS
+# PAGE 2: BATCH ANALYSIS  
 # ============================================================
 elif page == "Batch Analysis":
-    st.header("📊 Batch Customer Analysis")
-    st.markdown("Upload CSV file with customer data for bulk predictions")
+    st.header("📊 Batch Analysis")
+    st.markdown("**Accepts ANY telecom CSV format with smart defaults**")
     
-    # Create sample template
-    sample_data = {
-        'gender': ['Female', 'Male', 'Female'],
-        'SeniorCitizen': [0, 0, 1],
-        'Partner': ['Yes', 'No', 'Yes'],
-        'Dependents': ['No', 'No', 'Yes'],
-        'tenure': [12, 34, 62],
-        'PhoneService': ['Yes', 'Yes', 'Yes'],
-        'MultipleLines': ['No', 'No', 'No'],
-        'InternetService': ['DSL', 'Fiber optic', 'DSL'],
-        'OnlineSecurity': ['No', 'No', 'Yes'],
-        'OnlineBackup': ['Yes', 'No', 'Yes'],
-        'DeviceProtection': ['No', 'No', 'Yes'],
-        'TechSupport': ['No', 'No', 'No'],
-        'StreamingTV': ['No', 'No', 'No'],
-        'StreamingMovies': ['No', 'No', 'No'],
-        'Contract': ['Month-to-month', 'Month-to-month', 'One year'],
-        'PaperlessBilling': ['Yes', 'Yes', 'No'],
-        'PaymentMethod': ['Electronic check', 'Electronic check', 'Bank transfer (automatic)'],
-        'MonthlyCharges': [29.85, 70.70, 56.15]
-    }
-    sample_df = pd.DataFrame(sample_data)
-    sample_csv = sample_df.to_csv(index=False)
+    st.info("""
+    ℹ️ **Flexible Input Support**
     
-    # Download button
-    st.download_button(
-        label="📥 Download Sample CSV Template",
-        data=sample_csv,
-        file_name="churn_prediction_template.csv",
-        mime="text/csv",
-        help="Download this template to see the required format"
-    )
+    - Accepts various column names (Gender, gender, sex, etc.)
+    - Uses smart defaults for missing features
+    - Always makes predictions with available data
+    """)
     
-    # Format guide
-    with st.expander("📋 Required Columns & Accepted Values"):
-        st.markdown("""
-        **Demographics:**
-        - `gender`: Female, Male (or F, M)
-        - `SeniorCitizen`: 0, 1
-        - `Partner`: Yes, No
-        - `Dependents`: Yes, No
-        
-        **Account:**
-        - `tenure`: Number (0-72 months)
-        - `Contract`: Month-to-month, One year, Two year
-        - `PaperlessBilling`: Yes, No
-        - `PaymentMethod`: Electronic check, Mailed check, Bank transfer (automatic), Credit card (automatic)
-        - `MonthlyCharges`: Number (e.g., 70.50)
-        
-        **Services:**
-        - `PhoneService`: Yes, No
-        - `MultipleLines`: Yes, No, No phone service
-        - `InternetService`: DSL, Fiber optic, No
-        - `OnlineSecurity`: Yes, No, No internet service
-        - `OnlineBackup`: Yes, No, No internet service
-        - `DeviceProtection`: Yes, No, No internet service
-        - `TechSupport`: Yes, No, No internet service
-        - `StreamingTV`: Yes, No, No internet service
-        - `StreamingMovies`: Yes, No, No internet service
-        
-        **Note:** Column names accept variations (e.g., `gender` or `Gender`)
-        """)
+    # Sample template
+    sample = pd.DataFrame({
+        'gender': ['Female', 'Male'],
+        'SeniorCitizen': [0, 1],
+        'Partner': ['Yes', 'No'],
+        'Dependents': ['No', 'Yes'],
+        'tenure': [12, 60],
+        'PhoneService': ['Yes', 'Yes'],
+        'MultipleLines': ['No', 'No'],
+        'InternetService': ['DSL', 'Fiber optic'],
+        'OnlineSecurity': ['No', 'Yes'],
+        'OnlineBackup': ['Yes', 'Yes'],
+        'DeviceProtection': ['No', 'Yes'],
+        'TechSupport': ['No', 'No'],
+        'StreamingTV': ['No', 'No'],
+        'StreamingMovies': ['No', 'No'],
+        'Contract': ['Month-to-month', 'Two year'],
+        'PaperlessBilling': ['Yes', 'No'],
+        'PaymentMethod': ['Electronic check', 'Bank transfer (automatic)'],
+        'MonthlyCharges': [70.0, 55.0]
+    })
     
-    # File upload
-    uploaded_file = st.file_uploader("Upload CSV file", type=['csv'])
+    st.download_button("📥 Download Template", sample.to_csv(index=False),
+                      "template.csv", "text/csv")
     
-    if uploaded_file is not None:
+    uploaded_file = st.file_uploader("Upload CSV", type=['csv'])
+    
+    if uploaded_file:
         try:
             df = pd.read_csv(uploaded_file)
             st.success(f"✅ Loaded {len(df)} customers")
-            
-            st.subheader("Data Preview")
             st.dataframe(df.head(10), use_container_width=True)
             
-            if st.button("🚀 Run Batch Predictions", type="primary"):
-                with st.spinner("Processing predictions..."):
-                    # Import batch predictor
+            if st.button("🚀 Run Predictions", type="primary"):
+                with st.spinner("Processing..."):
                     sys.path.insert(0, 'src/models')
                     from batch_predictions import BatchPredictor
                     
-                    # Run predictions
                     predictor = BatchPredictor()
                     results, errors = predictor.predict_batch(df)
                     
                     if results is not None:
-                        # SUCCESS
-                        st.success("✅ Predictions Complete!")
+                        st.success("✅ Complete!")
                         
-                        # Summary metrics
                         col1, col2, col3, col4 = st.columns(4)
                         with col1:
-                            high_risk = (results['Risk_Level'] == 'High Risk').sum()
-                            st.metric("🔴 High Risk", high_risk)
+                            st.metric("🔴 High", (results['Risk_Level']=='High Risk').sum())
                         with col2:
-                            medium_risk = (results['Risk_Level'] == 'Medium Risk').sum()
-                            st.metric("🟡 Medium Risk", medium_risk)
+                            st.metric("🟡 Medium", (results['Risk_Level']=='Medium Risk').sum())
                         with col3:
-                            low_risk = (results['Risk_Level'] == 'Low Risk').sum()
-                            st.metric("🟢 Low Risk", low_risk)
+                            st.metric("🟢 Low", (results['Risk_Level']=='Low Risk').sum())
                         with col4:
-                            if 'Revenue_at_Risk' in results.columns:
-                                total_risk = results['Revenue_at_Risk'].sum()
-                                st.metric("💰 Revenue at Risk", f"${total_risk:,.0f}")
+                            st.metric("💰 At Risk", f"${results['Revenue_at_Risk'].sum():,.0f}")
                         
-                        # Results table
-                        st.subheader("📊 Prediction Results")
-                        display_cols = ['Churn_Probability', 'Risk_Level', 'Churn_Status']
-                        if 'Annual_Value' in results.columns:
-                            display_cols.append('Annual_Value')
-                        if 'Realistic_CLV' in results.columns:
-                            display_cols.append('Realistic_CLV')
-                        if 'Revenue_at_Risk' in results.columns:
-                            display_cols.append('Revenue_at_Risk')
+                        st.dataframe(results[['Churn_Probability', 'Risk_Level', 
+                                            'Annual_Value', 'Realistic_CLV']], 
+                                   use_container_width=True)
                         
-                        st.dataframe(results[display_cols], use_container_width=True)
-                        
-                        # Download button
-                        csv = results.to_csv(index=False)
-                        st.download_button(
-                            label="📥 Download Complete Results",
-                            data=csv,
-                            file_name="churn_predictions_results.csv",
-                            mime="text/csv",
-                            type="primary"
-                        )
+                        st.download_button("📥 Download", results.to_csv(index=False),
+                                         "predictions.csv", "text/csv", type="primary")
                     else:
-                        # ERRORS
-                        st.error("❌ Could not process file")
-                        for error in errors:
-                            st.error(error)
-                        st.info("💡 Download the sample template above to see the correct format")
-        
+                        st.warning("⚠️ Using defaults for missing features")
+                        st.info("Results may have lower confidence")
         except Exception as e:
-            st.error(f"❌ Error reading file: {str(e)}")
-            st.info("Please ensure your file is a valid CSV")
+            st.error(f"❌ Error: {e}")
 
 # ============================================================
 # PAGE 3: MODEL INFO
@@ -413,50 +316,40 @@ elif page == "Model Info":
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Model Details")
+        st.subheader("Details")
         st.markdown(f"""
-        - **Model Type**: {type(model).__name__}
-        - **Training Date**: 2026-01-27
+        - **Model**: {type(model).__name__}
         - **Framework**: Scikit-learn
-        - **Features**: 19 customer attributes
-        - **Target**: Binary churn classification
+        - **Features**: 19 telecom attributes
+        - **Dataset**: 7,043 customers
         """)
     
     with col2:
-        st.subheader("Performance Metrics")
+        st.subheader("Performance")
         st.markdown("""
-        - **ROC-AUC**: 84.0%
+        - **ROC-AUC**: 84.0% ⭐
         - **Accuracy**: 79.8%
         - **Precision**: 64.1%
         - **Recall**: 54.8%
-        - **F1-Score**: 59.1%
         """)
     
     st.markdown("---")
-    st.subheader("📈 Model Training Pipeline")
+    st.subheader("📈 Pipeline")
     st.markdown("""
-    1. **Data Preprocessing**: SQL-based transformations using DuckDB
-    2. **Feature Engineering**: Categorical encoding, scaling, TotalCharges calculation
-    3. **Model Training**: Logistic Regression baseline + Random Forest
-    4. **Experiment Tracking**: MLflow for versioning and metrics
-    5. **Model Selection**: Best model by ROC-AUC (Logistic Regression - 84.0%)
+    1. SQL preprocessing (DuckDB)
+    2. Model training (Logistic Regression + Random Forest)
+    3. Experiment tracking (MLflow)
+    4. Model selection (ROC-AUC)
+    5. Dashboard deployment (Streamlit)
     """)
     
     st.markdown("---")
-    st.subheader("🎯 Business Impact")
+    st.subheader("💼 Impact")
     st.markdown("""
-    **Use Cases:**
-    - Identify high-risk customers for retention campaigns
-    - Estimate revenue at risk from potential churn
-    - Prioritize customer success resources
-    - Track churn trends over time
-    
-    **Expected ROI:**
-    - 15-20% reduction in churn rate
-    - $500K-$1M annual revenue saved (for mid-size telco)
-    - 3-5x ROI on retention campaigns
+    - 15-20% churn reduction
+    - $500K-$1M savings/year
+    - 3-5x ROI on retention
     """)
 
-# Footer
 st.markdown("---")
 st.markdown("**Built with:** Python • Scikit-learn • MLflow • DuckDB • Streamlit")

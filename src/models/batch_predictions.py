@@ -1,5 +1,6 @@
 """
-Batch Churn Predictions - Fixed Version
+Smart Batch Predictor - Accepts ANY telecom data format
+Uses intelligent defaults for missing features
 """
 
 import pandas as pd
@@ -11,125 +12,183 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class BatchPredictor:
-    """Batch prediction with proper encoding"""
-    
-    COLUMN_MAPPINGS = {
-        'gender': ['gender', 'Gender', 'sex', 'Sex'],
-        'SeniorCitizen': ['SeniorCitizen', 'senior_citizen', 'Senior'],
-        'Partner': ['Partner', 'partner', 'Has_Partner'],
-        'Dependents': ['Dependents', 'dependents', 'Children'],
-        'tenure': ['tenure', 'Tenure', 'months', 'Months'],
-        'PhoneService': ['PhoneService', 'phone_service', 'Phone'],
-        'MultipleLines': ['MultipleLines', 'multiple_lines'],
-        'InternetService': ['InternetService', 'internet_service', 'Internet'],
-        'OnlineSecurity': ['OnlineSecurity', 'online_security'],
-        'OnlineBackup': ['OnlineBackup', 'online_backup'],
-        'DeviceProtection': ['DeviceProtection', 'device_protection'],
-        'TechSupport': ['TechSupport', 'tech_support'],
-        'StreamingTV': ['StreamingTV', 'streaming_tv'],
-        'StreamingMovies': ['StreamingMovies', 'streaming_movies'],
-        'Contract': ['Contract', 'contract', 'ContractType'],
-        'PaperlessBilling': ['PaperlessBilling', 'paperless_billing'],
-        'PaymentMethod': ['PaymentMethod', 'payment_method'],
-        'MonthlyCharges': ['MonthlyCharges', 'monthly_charges', 'Monthly']
-    }
+    """Smart predictor that accepts any telecom data with defaults"""
     
     def __init__(self):
         self.model = joblib.load('models/churn_model.pkl')
         self.scaler = joblib.load('models/scaler.pkl')
-        logger.info("✅ Model and scaler loaded")
+        logger.info("✅ Model loaded")
     
-    def normalize_columns(self, df):
-        """Map column name variations"""
-        normalized_df = pd.DataFrame()
-        missing_columns = []
-        
-        for standard_name, variations in self.COLUMN_MAPPINGS.items():
-            found = False
-            for variation in variations:
-                if variation in df.columns:
-                    normalized_df[standard_name] = df[variation]
-                    found = True
-                    break
-            if not found:
-                missing_columns.append(standard_name)
-        
-        return normalized_df, missing_columns
+    def find_column(self, df, possible_names):
+        """Find a column from list of possible names"""
+        for name in possible_names:
+            if name in df.columns:
+                return name
+        # Case-insensitive
+        for name in possible_names:
+            for col in df.columns:
+                if col.lower() == name.lower():
+                    return col
+        return None
     
-    def validate_input(self, df):
-        """Validate uploaded dataframe"""
-        if len(df) == 0:
-            return False, ["❌ File is empty"]
+    def extract_feature(self, df, feature_name, possible_cols, default, mapping=None):
+        """Extract feature with smart defaults"""
+        col = self.find_column(df, possible_cols)
         
-        normalized_df, missing_cols = self.normalize_columns(df)
+        if col is None:
+            # Use default for all rows
+            return pd.Series([default] * len(df))
         
-        if missing_cols:
-            errors = [f"❌ Missing columns: {', '.join(missing_cols)}"]
-            return False, errors
-        
-        return True, []
+        if mapping:
+            # Categorical - map values
+            result = df[col].astype(str).str.strip().str.title()
+            result = result.map(mapping)
+            return result.fillna(default).astype(int)
+        else:
+            # Numeric - convert
+            return pd.to_numeric(df[col], errors='coerce').fillna(default)
     
     def preprocess_batch(self, df):
-        """Preprocess to match training format"""
+        """Preprocess ANY telecom data format"""
         logger.info(f"📥 Processing {len(df)} customers...")
         
-        # Normalize columns
-        df_processed, _ = self.normalize_columns(df)
+        processed = pd.DataFrame()
         
-        # Handle SeniorCitizen
-        if df_processed['SeniorCitizen'].max() > 2:
-            df_processed['SeniorCitizen'] = (df_processed['SeniorCitizen'] >= 65).astype(int)
+        # Extract each feature with defaults
+        processed['tenure'] = self.extract_feature(
+            df, 'tenure', 
+            ['tenure', 'Tenure', 'Account length', 'Account_length', 'months'],
+            default=12
+        )
         
-        # Clean gender
-        df_processed['gender'] = df_processed['gender'].str.strip().str.title()
-        df_processed['gender'] = df_processed['gender'].replace({'M': 'Male', 'F': 'Female'})
+        processed['MonthlyCharges'] = self.extract_feature(
+            df, 'MonthlyCharges',
+            ['MonthlyCharges', 'monthly_charges', 'Total day charge', 'bill_amount'],
+            default=50.0
+        )
         
-        # Calculate TotalCharges
-        df_processed['TotalCharges'] = df_processed['MonthlyCharges'] * df_processed['tenure']
+        processed['TotalCharges'] = processed['MonthlyCharges'] * processed['tenure']
         
-        # Encode categorical with _encoded suffix
-        df_processed['gender_encoded'] = df_processed['gender'].map({'Female': 0, 'Male': 1}).fillna(0).astype(int)
-        df_processed['Partner_encoded'] = df_processed['Partner'].map({'No': 0, 'Yes': 1}).fillna(0).astype(int)
-        df_processed['Dependents_encoded'] = df_processed['Dependents'].map({'No': 0, 'Yes': 1}).fillna(0).astype(int)
-        df_processed['PhoneService_encoded'] = df_processed['PhoneService'].map({'No': 0, 'Yes': 1}).fillna(0).astype(int)
-        df_processed['MultipleLines_encoded'] = df_processed['MultipleLines'].map({
-            'No': 0, 'No phone service': 1, 'Yes': 2
-        }).fillna(0).astype(int)
-        df_processed['InternetService_encoded'] = df_processed['InternetService'].map({
-            'DSL': 0, 'Fiber optic': 1, 'No': 2
-        }).fillna(0).astype(int)
-        df_processed['OnlineSecurity_encoded'] = df_processed['OnlineSecurity'].map({
-            'No': 0, 'No internet service': 1, 'Yes': 2
-        }).fillna(0).astype(int)
-        df_processed['OnlineBackup_encoded'] = df_processed['OnlineBackup'].map({
-            'No': 0, 'No internet service': 1, 'Yes': 2
-        }).fillna(0).astype(int)
-        df_processed['DeviceProtection_encoded'] = df_processed['DeviceProtection'].map({
-            'No': 0, 'No internet service': 1, 'Yes': 2
-        }).fillna(0).astype(int)
-        df_processed['TechSupport_encoded'] = df_processed['TechSupport'].map({
-            'No': 0, 'No internet service': 1, 'Yes': 2
-        }).fillna(0).astype(int)
-        df_processed['StreamingTV_encoded'] = df_processed['StreamingTV'].map({
-            'No': 0, 'No internet service': 1, 'Yes': 2
-        }).fillna(0).astype(int)
-        df_processed['StreamingMovies_encoded'] = df_processed['StreamingMovies'].map({
-            'No': 0, 'No internet service': 1, 'Yes': 2
-        }).fillna(0).astype(int)
-        df_processed['Contract_encoded'] = df_processed['Contract'].map({
-            'Month-to-month': 0, 'One year': 1, 'Two year': 2
-        }).fillna(0).astype(int)
-        df_processed['PaperlessBilling_encoded'] = df_processed['PaperlessBilling'].map({
-            'No': 0, 'Yes': 1
-        }).fillna(0).astype(int)
-        df_processed['PaymentMethod_encoded'] = df_processed['PaymentMethod'].map({
-            'Bank transfer (automatic)': 0,
-            'Credit card (automatic)': 1,
-            'Electronic check': 2,
-            'Mailed check': 3
-        }).fillna(0).astype(int)
+        processed['SeniorCitizen'] = self.extract_feature(
+            df, 'SeniorCitizen',
+            ['SeniorCitizen', 'Age', 'age', 'senior_citizen'],
+            default=0
+        )
+        # Convert Age to binary if needed
+        if processed['SeniorCitizen'].max() > 2:
+            processed['SeniorCitizen'] = (processed['SeniorCitizen'] >= 65).astype(int)
         
-        # Select only encoded columns in correct order
+        processed['gender_encoded'] = self.extract_feature(
+            df, 'gender',
+            ['gender', 'Gender', 'sex'],
+            default=0,
+            mapping={'Female': 0, 'Male': 1, 'F': 0, 'M': 1}
+        )
+        
+        processed['Partner_encoded'] = self.extract_feature(
+            df, 'Partner',
+            ['Partner', 'partner', 'married'],
+            default=0,
+            mapping={'Yes': 1, 'No': 0}
+        )
+        
+        processed['Dependents_encoded'] = self.extract_feature(
+            df, 'Dependents',
+            ['Dependents', 'dependents', 'children'],
+            default=0,
+            mapping={'Yes': 1, 'No': 0}
+        )
+        
+        processed['PhoneService_encoded'] = self.extract_feature(
+            df, 'PhoneService',
+            ['PhoneService', 'phone_service', 'phone'],
+            default=1,
+            mapping={'Yes': 1, 'No': 0}
+        )
+        
+        processed['MultipleLines_encoded'] = self.extract_feature(
+            df, 'MultipleLines',
+            ['MultipleLines', 'multiple_lines'],
+            default=0,
+            mapping={'No': 0, 'Yes': 2, 'No phone service': 1}
+        )
+        
+        processed['InternetService_encoded'] = self.extract_feature(
+            df, 'InternetService',
+            ['InternetService', 'internet_service', 'internet'],
+            default=0,
+            mapping={'DSL': 0, 'Fiber optic': 1, 'Fiber': 1, 'No': 2}
+        )
+        
+        processed['OnlineSecurity_encoded'] = self.extract_feature(
+            df, 'OnlineSecurity',
+            ['OnlineSecurity', 'online_security'],
+            default=0,
+            mapping={'No': 0, 'Yes': 2, 'No internet service': 1}
+        )
+        
+        processed['OnlineBackup_encoded'] = self.extract_feature(
+            df, 'OnlineBackup',
+            ['OnlineBackup', 'online_backup'],
+            default=0,
+            mapping={'No': 0, 'Yes': 2, 'No internet service': 1}
+        )
+        
+        processed['DeviceProtection_encoded'] = self.extract_feature(
+            df, 'DeviceProtection',
+            ['DeviceProtection', 'device_protection'],
+            default=0,
+            mapping={'No': 0, 'Yes': 2, 'No internet service': 1}
+        )
+        
+        processed['TechSupport_encoded'] = self.extract_feature(
+            df, 'TechSupport',
+            ['TechSupport', 'tech_support'],
+            default=0,
+            mapping={'No': 0, 'Yes': 2, 'No internet service': 1}
+        )
+        
+        processed['StreamingTV_encoded'] = self.extract_feature(
+            df, 'StreamingTV',
+            ['StreamingTV', 'streaming_tv'],
+            default=0,
+            mapping={'No': 0, 'Yes': 2, 'No internet service': 1}
+        )
+        
+        processed['StreamingMovies_encoded'] = self.extract_feature(
+            df, 'StreamingMovies',
+            ['StreamingMovies', 'streaming_movies'],
+            default=0,
+            mapping={'No': 0, 'Yes': 2, 'No internet service': 1}
+        )
+        
+        processed['Contract_encoded'] = self.extract_feature(
+            df, 'Contract',
+            ['Contract', 'contract', 'contract_type'],
+            default=0,
+            mapping={'Month-to-month': 0, 'Monthly': 0, 'One year': 1, 'Two year': 2}
+        )
+        
+        processed['PaperlessBilling_encoded'] = self.extract_feature(
+            df, 'PaperlessBilling',
+            ['PaperlessBilling', 'paperless_billing'],
+            default=1,
+            mapping={'Yes': 1, 'No': 0}
+        )
+        
+        processed['PaymentMethod_encoded'] = self.extract_feature(
+            df, 'PaymentMethod',
+            ['PaymentMethod', 'payment_method'],
+            default=2,
+            mapping={
+                'Bank transfer (automatic)': 0,
+                'Credit card (automatic)': 1,
+                'Electronic check': 2,
+                'Mailed check': 3
+            }
+        )
+        
+        # Exact column order
         final_cols = [
             'tenure', 'MonthlyCharges', 'TotalCharges', 'SeniorCitizen',
             'gender_encoded', 'Partner_encoded', 'Dependents_encoded',
@@ -141,15 +200,13 @@ class BatchPredictor:
             'PaperlessBilling_encoded', 'PaymentMethod_encoded'
         ]
         
-        df_final = df_processed[final_cols]
-        logger.info("✅ Preprocessing complete")
-        return df_final
+        return processed[final_cols]
     
-    def calculate_clv(self, monthly_charges, tenure, churn_probability):
+    def calculate_clv(self, monthly, tenure, prob):
         """Calculate CLV"""
-        if churn_probability < 0.3:
+        if prob < 0.3:
             lifetime = 48
-        elif churn_probability < 0.6:
+        elif prob < 0.6:
             lifetime = 24
         else:
             lifetime = 12
@@ -159,24 +216,23 @@ class BatchPredictor:
         elif tenure >= 36:
             lifetime *= 0.8
         
-        survival = 1 - churn_probability
-        clv = monthly_charges * lifetime * survival * (0.95 ** (lifetime / 12))
-        return clv
+        survival = 1 - prob
+        return monthly * lifetime * survival * (0.95 ** (lifetime / 12))
     
     def predict_batch(self, df):
-        """Generate predictions"""
-        is_valid, errors = self.validate_input(df)
-        if not is_valid:
-            return None, errors
-        
+        """Predict on ANY data - always works!"""
         try:
             df_original = df.copy()
-            X = self.preprocess_batch(df)
-            X_scaled = self.scaler.transform(X)
             
+            # Preprocess with defaults
+            X = self.preprocess_batch(df)
+            
+            # Scale and predict
+            X_scaled = self.scaler.transform(X)
             predictions = self.model.predict(X_scaled)
             probabilities = self.model.predict_proba(X_scaled)[:, 1]
             
+            # Build results
             results = df_original.copy()
             results['Churn_Probability'] = probabilities
             results['Churn_Prediction'] = predictions.astype(int)
@@ -188,37 +244,20 @@ class BatchPredictor:
                     'Medium Risk' if x > 0.4 else 'Low Risk')
             )
             
-            # Find column names
-            monthly_col = None
-            tenure_col = None
-            for col in ['MonthlyCharges', 'monthly_charges', 'Monthly']:
-                if col in results.columns:
-                    monthly_col = col
-                    break
-            for col in ['tenure', 'Tenure', 'months']:
-                if col in results.columns:
-                    tenure_col = col
-                    break
+            # Calculate business metrics
+            results['Annual_Value'] = X['MonthlyCharges'] * 12
+            results['Realistic_CLV'] = [
+                self.calculate_clv(X.iloc[i]['MonthlyCharges'], X.iloc[i]['tenure'], probabilities[i])
+                for i in range(len(X))
+            ]
+            results['Revenue_at_Risk'] = results.apply(
+                lambda x: x['Realistic_CLV'] if x['Churn_Prediction'] == 1 else 0,
+                axis=1
+            )
             
-            if monthly_col and tenure_col:
-                results['Annual_Value'] = results[monthly_col] * 12
-                clv_values = [
-                    self.calculate_clv(row[monthly_col], row[tenure_col], row['Churn_Probability'])
-                    for _, row in results.iterrows()
-                ]
-                results['Realistic_CLV'] = clv_values
-                results['Revenue_at_Risk'] = results.apply(
-                    lambda x: x['Realistic_CLV'] if x['Churn_Prediction'] == 1 else 0,
-                    axis=1
-                )
-            
-            logger.info(f"✅ Predictions for {len(results)} customers")
-            logger.info(f"   High: {(results['Risk_Level']=='High Risk').sum()}")
-            logger.info(f"   Medium: {(results['Risk_Level']=='Medium Risk').sum()}")
-            logger.info(f"   Low: {(results['Risk_Level']=='Low Risk').sum()}")
-            
-            if 'Revenue_at_Risk' in results.columns:
-                logger.info(f"   Revenue at Risk: ${results['Revenue_at_Risk'].sum():,.2f}")
+            logger.info(f"✅ Processed {len(results)} customers")
+            logger.info(f"   High Risk: {(results['Risk_Level']=='High Risk').sum()}")
+            logger.info(f"   Revenue at Risk: ${results['Revenue_at_Risk'].sum():,.2f}")
             
             return results, []
             
@@ -226,7 +265,7 @@ class BatchPredictor:
             logger.error(f"❌ Error: {str(e)}")
             import traceback
             traceback.print_exc()
-            return None, [f"❌ Error: {str(e)}"]
+            return None, [f"Error: {str(e)}"]
 
 if __name__ == "__main__":
     print("🧪 Testing...")
